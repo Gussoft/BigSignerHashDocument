@@ -5,6 +5,7 @@ import com.itextpdf.text.Image;
 import com.itextpdf.text.Rectangle;
 import com.itextpdf.text.pdf.*;
 import com.itextpdf.text.pdf.security.*;
+import com.typesafe.config.ConfigFactory;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -29,8 +30,8 @@ import java.util.List;
 
 public class SignatureUtil {
 
-    public static SignMapper preSign(SignMapper signMapper, File file) throws CertificateException, IOException, DocumentException {
-        File certificadoPublico  = getPublicCert();
+    public static SignMapper preSign2(SignMapper signMapper, File file) throws CertificateException, IOException, DocumentException {
+        File certificadoPublico = getPublicCert();//new File("C:\\Users\\LENOVO\\Downloads\\signtest.cer");//
         String x509Path = certificadoPublico.getPath();//System.getenv("bigsigner.certificate.path");//
 
         CertificateFactory factory = CertificateFactory.getInstance("X.509");
@@ -60,8 +61,8 @@ public class SignatureUtil {
                         signMapper.getVisX() + signMapper.getVisW(),
                         visualSignaturePageDimension.getHeight() - signMapper.getVisY()),
                 visualSignaturePage, "sig");
-        sap.setSignatureGraphic(Image.getInstance(signMapper.getVisI()));
-        sap.setRenderingMode(PdfSignatureAppearance.RenderingMode.GRAPHIC_AND_DESCRIPTION);
+        //sap.setSignatureGraphic(Image.getInstance(signMapper.getVisI()));
+        //sap.setRenderingMode(PdfSignatureAppearance.RenderingMode.GRAPHIC_AND_DESCRIPTION);
         sap.setCertificate(chain[0]);
 
         // we create the signature infrastructure
@@ -99,6 +100,91 @@ public class SignatureUtil {
             Collection<byte[]> crlBytes = null;
             byte[] sh = sgn.getAuthenticatedAttributeBytes(hash, null, null, MakeSignature.CryptoStandard.CMS);
             certificadoPublico.delete();
+
+            signMapper.setAppearance(sap);
+            signMapper.setHash(hash);
+            signMapper.setSignHash(sh);
+            signMapper.setOcsp(ocsp);
+            signMapper.setSgn(sgn);
+            signMapper.setBaos(baos);
+            return signMapper;
+
+        } catch (GeneralSecurityException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public static SignMapper preSign(File file) throws CertificateException, IOException, DocumentException {
+        File certificadoPublico = getPublicCert();
+        String x509Path = certificadoPublico.getAbsolutePath();//ConfigFactory.load().getString("bigsigner.certificate.path");
+
+        CertificateFactory factory = CertificateFactory.getInstance("X.509");
+        Certificate[] chain = new Certificate[1];
+        chain[0] = factory.generateCertificate(new FileInputStream(x509Path));
+
+
+        PdfReader reader = new PdfReader(file.getAbsolutePath());
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PdfStamper stamper = PdfStamper.createSignature(reader, baos, '\0');
+
+        SignMapper signMapper = new SignMapper();
+        PDDocument pdDocument = PDDocument.load(file);
+        int visualSignaturePage = pdDocument.getNumberOfPages();
+        int providedVisSigPage = signMapper.getVisP();
+        if (providedVisSigPage > 0 && providedVisSigPage <= visualSignaturePage) {
+            visualSignaturePage = providedVisSigPage;
+        }
+        PDRectangle visualSignaturePageDimension = getPageDimension(pdDocument, visualSignaturePage);
+
+// we create the signature appearance
+        PdfSignatureAppearance sap = stamper.getSignatureAppearance();
+
+//        sap.setReason("Test");
+        sap.setLocation("BigSigner Server");
+        sap.setVisibleSignature(
+                new Rectangle(signMapper.getVisX(),
+                        visualSignaturePageDimension.getHeight() - signMapper.getVisY() - signMapper.getVisH(),
+                        signMapper.getVisX() + signMapper.getVisW(),
+                        visualSignaturePageDimension.getHeight() - signMapper.getVisY()),
+                visualSignaturePage, "sig");
+        //sap.setSignatureGraphic(Image.getInstance(signMapper.getVisI()));
+        //sap.setRenderingMode(PdfSignatureAppearance.RenderingMode.GRAPHIC_AND_DESCRIPTION);
+        sap.setCertificate(chain[0]);
+
+        // we create the signature infrastructure
+        PdfSignature dic = new PdfSignature(PdfName.ADOBE_PPKLITE, PdfName.ADBE_PKCS7_DETACHED);
+//        dic.setReason(sap.getReason());
+        dic.setLocation(sap.getLocation());
+        dic.setContact(sap.getContact());
+        dic.setDate(new PdfDate(sap.getSignDate()));
+        sap.setCryptoDictionary(dic);
+        HashMap<PdfName, Integer> exc = new HashMap<PdfName, Integer>();
+        exc.put(PdfName.CONTENTS, new Integer(8192 * 2 + 2));
+        sap.setLayer2Text(SignatureUtil.processTextTemplate(System.getenv("BIGSIGNER_TEMPLANTE"), sap.getSignDate()));
+        sap.preClose(exc);
+        ExternalDigest externalDigest = new ExternalDigest() {
+            public MessageDigest getMessageDigest(String hashAlgorithm)
+                    throws GeneralSecurityException {
+                return DigestAlgorithms.getMessageDigest(hashAlgorithm, null);
+            }
+        };
+
+        try {
+            PdfPKCS7 sgn = new PdfPKCS7(null, chain, "SHA256", null, externalDigest, false);
+
+            InputStream data = sap.getRangeStream();
+            byte[] hash = DigestAlgorithms.digest(data, externalDigest.getMessageDigest("SHA256"));
+
+            // we get OCSP and CRL for the cert
+            OCSPVerifier ocspVerifier = new OCSPVerifier(null, null);
+            OcspClient ocspClient = new OcspClientBouncyCastle(ocspVerifier);
+            byte[] ocsp = null;
+            if (chain.length >= 2 && ocspClient != null) {
+                ocsp = ocspClient.getEncoded((X509Certificate) chain[0], (X509Certificate) chain[1], null);
+            }
+            Collection<byte[]> crlBytes = null;
+            byte[] sh = sgn.getAuthenticatedAttributeBytes(hash, null, null, MakeSignature.CryptoStandard.CMS);
 
             signMapper.setAppearance(sap);
             signMapper.setHash(hash);
